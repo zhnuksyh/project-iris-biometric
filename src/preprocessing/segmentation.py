@@ -15,6 +15,32 @@ import numpy as np
 from typing import Optional
 
 
+DEFAULT_SEGMENTATION_CONFIG = {
+    "pupil": {
+        "dp": 1.0,
+        "min_dist": 50,
+        "param1": 100,
+        "param2_start": 50,
+        "param2_min": 5,
+        "param2_step": -5,
+        "min_radius": 10,
+        "max_radius": 80,
+    },
+    "iris": {
+        "dp": 1.0,
+        "min_dist": 50,
+        "param1": 100,
+        "param2_start": 30,
+        "param2_min": 5,
+        "param2_step": -5,
+        "min_radius": 80,
+        "max_radius": 200,
+    },
+    "center_offset_frac": 0.60,
+    "center_offset_floor": 60.0,
+}
+
+
 def denoise_image(image_path: str) -> np.ndarray:
     """Load a grayscale iris image and apply noise reduction.
 
@@ -45,7 +71,63 @@ def denoise_image(image_path: str) -> np.ndarray:
     return image
 
 
-def segment_iris(blurred_image: np.ndarray) -> Optional[dict]:
+def _detect_all(image, cfg):
+    """Run HoughCircles with a fallback loop on param2; return circles or None."""
+    for p2 in range(cfg["param2_start"], cfg["param2_min"] - 1, cfg["param2_step"]):
+        circles = cv2.HoughCircles(
+            image,
+            cv2.HOUGH_GRADIENT,
+            dp=cfg["dp"],
+            minDist=cfg["min_dist"],
+            param1=cfg["param1"],
+            param2=p2,
+            minRadius=cfg["min_radius"],
+            maxRadius=cfg["max_radius"],
+        )
+        if circles is not None:
+            return np.round(circles[0, :]).astype(int)
+    return None
+
+
+def _merge_segmentation_config(config: Optional[dict]) -> dict:
+    """Merge a partial segmentation config with the production defaults."""
+    merged = {
+        "pupil": DEFAULT_SEGMENTATION_CONFIG["pupil"].copy(),
+        "iris": DEFAULT_SEGMENTATION_CONFIG["iris"].copy(),
+        "center_offset_frac": DEFAULT_SEGMENTATION_CONFIG["center_offset_frac"],
+        "center_offset_floor": DEFAULT_SEGMENTATION_CONFIG["center_offset_floor"],
+    }
+    if not config:
+        return merged
+    for key in ("pupil", "iris"):
+        if key in config:
+            merged[key].update(config[key])
+    for key in ("center_offset_frac", "center_offset_floor"):
+        if key in config:
+            merged[key] = config[key]
+    return merged
+
+
+def validate_iris_circles(circles: dict, image_shape: tuple) -> tuple:
+    """Validate circle geometry and return (is_valid, reason)."""
+    h, w = image_shape[:2]
+    cx, cy = circles["center"]
+    r_pupil = circles["r_pupil"]
+    r_iris = circles["r_iris"]
+
+    if r_pupil <= 0 or r_iris <= 0:
+        return False, "non_positive_radius"
+    if r_iris <= r_pupil:
+        return False, "iris_not_larger_than_pupil"
+    if not (0 <= cx < w and 0 <= cy < h):
+        return False, "center_outside_image"
+    if r_iris > max(h, w):
+        return False, "iris_radius_too_large"
+    return True, "ok"
+
+
+def segment_iris_configurable(blurred_image: np.ndarray,
+                              config: Optional[dict] = None) -> Optional[dict]:
     """Detect pupil and iris boundaries using two-phase HoughCircles.
 
     Performs two independent Hough circle detections:
@@ -69,33 +151,12 @@ def segment_iris(blurred_image: np.ndarray) -> Optional[dict]:
         On success: {"center": (cx, cy), "r_pupil": float, "r_iris": float}
         On failure (no valid circles found): None
     """
+    cfg = _merge_segmentation_config(config)
     h, w = blurred_image.shape[:2]
     img_cx, img_cy = w / 2.0, h / 2.0   # image centre — used as prior
 
-    def _detect_all(image, dp, min_dist, p1, p2_start, p2_min, p2_step, min_r, max_r):
-        """Run HoughCircles with a fallback loop on param2; return all circles or None."""
-        for p2 in range(p2_start, p2_min - 1, p2_step):
-            circles = cv2.HoughCircles(
-                image,
-                cv2.HOUGH_GRADIENT,
-                dp=dp,
-                minDist=min_dist,
-                param1=p1,
-                param2=p2,
-                minRadius=min_r,
-                maxRadius=max_r,
-            )
-            if circles is not None:
-                return np.round(circles[0, :]).astype(int)
-        return None
-
     # --- Phase 1: Pupil (select circle closest to image centre) ---
-    pupil_candidates = _detect_all(
-        blurred_image,
-        dp=1.0, min_dist=50,
-        p1=100, p2_start=50, p2_min=5, p2_step=-5,
-        min_r=10, max_r=80,
-    )
+    pupil_candidates = _detect_all(blurred_image, cfg["pupil"])
     if pupil_candidates is None:
         return None
 
@@ -107,12 +168,7 @@ def segment_iris(blurred_image: np.ndarray) -> Optional[dict]:
 
     # --- Phase 2: Iris (select circle closest to pupil centre) ---
     # maxRadius=200 covers both 280x320 (r~90-130) and 480x640 (r~100-180) images
-    iris_candidates = _detect_all(
-        blurred_image,
-        dp=1.0, min_dist=50,
-        p1=100, p2_start=30, p2_min=5, p2_step=-5,
-        min_r=80, max_r=200,
-    )
+    iris_candidates = _detect_all(blurred_image, cfg["iris"])
     if iris_candidates is None:
         return None
 
@@ -126,12 +182,42 @@ def segment_iris(blurred_image: np.ndarray) -> Optional[dict]:
     # Allow centre offset up to 60% of iris radius (handles Lamp illumination variance
     # where the ring illuminator shifts apparent iris centre), floor of 60 px.
     center_dist = float(np.sqrt((px - ix) ** 2 + (py - iy) ** 2))
-    max_offset   = max(0.60 * r_iris, 60.0)
+    max_offset = max(cfg["center_offset_frac"] * r_iris, cfg["center_offset_floor"])
     if r_iris <= r_pupil or center_dist > max_offset:
         return None
 
     # Use pupil centre as the canonical centre (more stable)
-    return {"center": (int(px), int(py)), "r_pupil": float(r_pupil), "r_iris": float(r_iris)}
+    circles = {
+        "center": (int(px), int(py)),
+        "r_pupil": float(r_pupil),
+        "r_iris": float(r_iris),
+        "pupil_center": (int(px), int(py)),
+        "iris_center": (int(ix), int(iy)),
+        "center_distance": center_dist,
+    }
+    ok, _ = validate_iris_circles(circles, blurred_image.shape)
+    return circles if ok else None
+
+
+def segment_iris(blurred_image: np.ndarray) -> Optional[dict]:
+    """Detect pupil and iris boundaries with the production configuration."""
+    return segment_iris_configurable(blurred_image, DEFAULT_SEGMENTATION_CONFIG)
+
+
+def draw_segmentation_overlay(image: np.ndarray, circles: dict) -> np.ndarray:
+    """Return a BGR image with pupil and iris circles overlaid for QC."""
+    if image.ndim == 2:
+        overlay = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    else:
+        overlay = image.copy()
+
+    cx, cy = circles["center"]
+    cv2.circle(overlay, (int(cx), int(cy)), int(round(circles["r_iris"])),
+               (0, 255, 0), 2)
+    cv2.circle(overlay, (int(cx), int(cy)), int(round(circles["r_pupil"])),
+               (0, 0, 255), 2)
+    cv2.circle(overlay, (int(cx), int(cy)), 3, (255, 0, 0), -1)
+    return overlay
 
 
 def normalize_iris(
