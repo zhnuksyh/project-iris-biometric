@@ -13,6 +13,7 @@ __pycache__/
 # Dataset directories (never commit raw or processed image data)
 data/raw/
 data/processed/
+data/processed_recovered/
 data/processed_strip/
 data/processed.zip
 
@@ -36,6 +37,11 @@ saved_models/
 # Trained model weights (copied back manually after training on Linux)
 models/*.h5
 models/*.json
+
+# Recovery experiment outputs (regeneratable)
+figures/recovery_qc/
+reports/recovery_metadata*.jsonl
+reports/recovery_summary*.json
 
 # Local reference docs (personal notes, not for repo)
 PROJECT_STATUS.md
