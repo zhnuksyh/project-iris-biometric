@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Optimized ArcFace Iris Recognition Report</title>
+  <style>
+    :root {
+      --ink: #17212b;
+      --muted: #5a6673;
+      --line: #d9e0e7;
+      --panel: #ffffff;
+      --wash: #f4f7fa;
+      --arc: #1769aa;
+      --soft: #8b4b9f;
+      --gabor: #8b6f28;
+      --good: #0f7a4f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--wash);
+      line-height: 1.55;
+    }
+    header {
+      background: #0f1b24;
+      color: #fff;
+      padding: 44px 32px 32px;
+      border-bottom: 5px solid var(--arc);
+    }
+    .wrap { width: min(1180px, calc(100% - 48px)); margin: 0 auto; }
+    .eyebrow {
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      font-size: 12px;
+      color: #a9c6dc;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(30px, 4vw, 54px);
+      line-height: 1.03;
+      letter-spacing: 0;
+      max-width: 920px;
+    }
+    .subtitle {
+      max-width: 900px;
+      margin: 18px 0 0;
+      color: #d8e3ec;
+      font-size: 18px;
+    }
+    main { padding: 30px 0 56px; }
+    section { margin: 28px 0; }
+    h2 { margin: 0 0 14px; font-size: 24px; letter-spacing: 0; }
+    .grid { display: grid; gap: 16px; }
+    .metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .figure-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .split { display: grid; grid-template-columns: 1.15fr .85fr; gap: 16px; align-items: start; }
+    .card, figure {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: 0 1px 2px rgba(15, 27, 36, .04);
+    }
+    .card { padding: 18px; }
+    .metric-label {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+    .metric-value { margin-top: 6px; font-size: 32px; line-height: 1; font-weight: 800; }
+    .metric-note { margin-top: 8px; color: var(--muted); font-size: 14px; }
+    .callout {
+      background: #eaf4fb;
+      border: 1px solid #bed9ec;
+      border-left: 5px solid var(--arc);
+      border-radius: 8px;
+      padding: 18px 20px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 2px rgba(15, 27, 36, .04);
+    }
+    th, td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: right;
+      vertical-align: middle;
+      font-variant-numeric: tabular-nums;
+    }
+    th:first-child, td:first-child { text-align: left; font-weight: 800; }
+    th {
+      background: #edf3f7;
+      color: #3d4a56;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+    tr:last-child td { border-bottom: 0; }
+    .arc { color: var(--arc); }
+    .soft { color: var(--soft); }
+    .gabor { color: var(--gabor); }
+    .good { color: var(--good); }
+    figure { margin: 0; padding: 12px; }
+    figure img { width: 100%; display: block; border-radius: 4px; background: #fff; }
+    figcaption { color: var(--muted); font-size: 14px; margin-top: 10px; }
+    code {
+      background: #edf3f7;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      padding: 1px 5px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .92em;
+    }
+    .meta { color: var(--muted); font-size: 14px; }
+    ul { margin: 8px 0 0; padding-left: 20px; }
+    footer { color: var(--muted); padding: 18px 0 44px; font-size: 14px; }
+    @media (max-width: 860px) {
+      .metrics, .figure-grid, .split { grid-template-columns: 1fr; }
+      th, td { padding: 10px 8px; font-size: 13px; }
+      .wrap { width: min(100% - 28px, 1180px); }
+      header { padding: 34px 18px 26px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <div class="eyebrow">Optimized expanded open-set evaluation</div>
+      <h1>ArcFace delivers the strongest iris-authentication performance.</h1>
+      <p class="subtitle">
+        The final experiment uses recovered CASIA-IrisV4 samples, fair expanded-data retraining, an identity-disjoint open-set protocol, and bootstrap confidence intervals.
+      </p>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="grid metrics">
+      <div class="card">
+        <div class="metric-label">ArcFace EER</div>
+        <div class="metric-value arc">4.77%</div>
+        <div class="metric-note">1.02 points lower than Softmax.</div>
+      </div>
+      <div class="card">
+        <div class="metric-label">TAR @ FAR=1%</div>
+        <div class="metric-value arc">91.90%</div>
+        <div class="metric-note">+3.85 points over Softmax.</div>
+      </div>
+      <div class="card">
+        <div class="metric-label">TAR @ FAR=0.1%</div>
+        <div class="metric-value arc">85.31%</div>
+        <div class="metric-note">+10.85 points over Softmax.</div>
+      </div>
+      <div class="card">
+        <div class="metric-label">Open-set test</div>
+        <div class="metric-value">4,728</div>
+        <div class="metric-note">samples from 419 unseen identities.</div>
+      </div>
+    </section>
+
+    <section class="callout">
+      <strong>Main result:</strong> ArcFace beats Softmax in EER and both low-FAR operating points. The bootstrap confidence interval for ArcFace minus Softmax is separated from zero for every headline metric.
+    </section>
+
+    <section>
+      <h2>Headline Metrics</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>System</th>
+            <th>EER</th>
+            <th>TAR @ FAR=1%</th>
+            <th>TAR @ FAR=0.1%</th>
+            <th>Genuine Mean</th>
+            <th>Impostor Mean</th>
+            <th>Score Gap</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="arc">ArcFace</td>
+            <td><strong>4.77%</strong></td>
+            <td><strong>91.90%</strong></td>
+            <td><strong>85.31%</strong></td>
+            <td>0.6587</td>
+            <td>0.0191</td>
+            <td><strong>0.6397</strong></td>
+          </tr>
+          <tr>
+            <td class="soft">Softmax</td>
+            <td>5.80%</td>
+            <td>88.09%</td>
+            <td>74.46%</td>
+            <td>0.6945</td>
+            <td>0.0843</td>
+            <td>0.6102</td>
+          </tr>
+          <tr>
+            <td class="gabor">Gabor</td>
+            <td>31.51%</td>
+            <td>32.67%</td>
+            <td>20.10%</td>
+            <td>0.6489</td>
+            <td>0.5525</td>
+            <td>0.0965</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Bootstrap Evidence</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Metric</th>
+            <th>ArcFace Mean [95% CI]</th>
+            <th>Softmax Mean [95% CI]</th>
+            <th>ArcFace - Softmax [95% CI]</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>EER</td>
+            <td>4.78% [4.60%, 4.97%]</td>
+            <td>5.79% [5.61%, 5.98%]</td>
+            <td class="good"><strong>-1.01 pts [-1.17, -0.85]</strong></td>
+          </tr>
+          <tr>
+            <td>TAR @ FAR=1%</td>
+            <td>91.89% [91.54%, 92.20%]</td>
+            <td>88.03% [87.55%, 88.47%]</td>
+            <td class="good"><strong>+3.85 pts [+3.46, +4.26]</strong></td>
+          </tr>
+          <tr>
+            <td>TAR @ FAR=0.1%</td>
+            <td>85.24% [84.54%, 85.87%]</td>
+            <td>74.36% [73.27%, 75.52%]</td>
+            <td class="good"><strong>+10.88 pts [+9.80, +12.01]</strong></td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="meta">Bootstrap settings: 500 resamples, 95% confidence interval, seed 42, 1,000 threshold sweep points.</p>
+    </section>
+
+    <section>
+      <h2>Supplementary Classification-Style Metrics</h2>
+      <div class="callout">
+        <strong>Metric mapping:</strong> TAR is the verification equivalent of recall/true-positive rate for genuine pairs. Precision, F1, and pair accuracy depend on the decision threshold and on the genuine/impostor pair ratio, so they are reported here as supplementary operating-point metrics rather than as the primary biometric claim.
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>System / Operating Point</th>
+            <th>Recall</th>
+            <th>Precision</th>
+            <th>F1</th>
+            <th>Pair Accuracy</th>
+            <th>Balanced Accuracy</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="arc">ArcFace @ FAR=1%</td>
+            <td><strong>91.90%</strong></td>
+            <td><strong>47.89%</strong></td>
+            <td><strong>62.97%</strong></td>
+            <td><strong>98.93%</strong></td>
+            <td><strong>95.45%</strong></td>
+          </tr>
+          <tr>
+            <td class="soft">Softmax @ FAR=1%</td>
+            <td>88.09%</td>
+            <td>46.83%</td>
+            <td>61.15%</td>
+            <td>98.89%</td>
+            <td>93.55%</td>
+          </tr>
+          <tr>
+            <td class="arc">ArcFace @ FAR=0.1%</td>
+            <td><strong>85.31%</strong></td>
+            <td><strong>89.51%</strong></td>
+            <td><strong>87.36%</strong></td>
+            <td><strong>99.76%</strong></td>
+            <td><strong>92.60%</strong></td>
+          </tr>
+          <tr>
+            <td class="soft">Softmax @ FAR=0.1%</td>
+            <td>74.46%</td>
+            <td>88.16%</td>
+            <td>80.73%</td>
+            <td>99.65%</td>
+            <td>87.18%</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="meta">Pair accuracy is high for all low-FAR settings because the evaluation contains many more impostor pairs than genuine pairs. Balanced accuracy gives equal weight to genuine recall and impostor rejection.</p>
+    </section>
+
+    <section class="split">
+      <div class="card">
+        <h2>Protocol</h2>
+        <ul>
+          <li>Mode: expanded open-set evaluation.</li>
+          <li>Identity-disjoint split with zero train/test identity overlap.</li>
+          <li>Test set: 4,728 samples from 419 unseen identities.</li>
+          <li>Pair counts: 27,987 genuine pairs and 2,798,700 impostor pairs.</li>
+          <li>Training data: original processed tensors plus recovered tensors from existing CASIA-IrisV4 subsets.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h2>Artifacts</h2>
+        <ul>
+          <li>Results JSON: <code>reports/phase8_expanded_openset_results.json</code></li>
+          <li>Figures: <code>figures/expanded_openset/</code></li>
+          <li>ArcFace checkpoint: <code>models/arcface_expanded_openset_best.h5</code></li>
+          <li>Softmax checkpoint: <code>models/softmax_expanded_openset_best.h5</code></li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <h2>Visual Evidence</h2>
+      <div class="grid figure-grid">
+        <figure>
+          <img src="../figures/expanded_openset/roc_curves.png" alt="ROC curves for ArcFace, Softmax, and Gabor">
+          <figcaption>ROC curves show ArcFace holding the strongest low-FAR operating behavior.</figcaption>
+        </figure>
+        <figure>
+          <img src="../figures/expanded_openset/det_curves.png" alt="DET curves for ArcFace, Softmax, and Gabor">
+          <figcaption>DET curves summarize the FAR/FRR tradeoff across thresholds.</figcaption>
+        </figure>
+        <figure>
+          <img src="../figures/expanded_openset/score_distributions.png" alt="Genuine and impostor score distributions">
+          <figcaption>Score distributions show separation between genuine and impostor comparisons.</figcaption>
+        </figure>
+        <figure>
+          <img src="../figures/expanded_openset/training_curves.png" alt="Training curves for expanded ArcFace and Softmax">
+          <figcaption>Training curves for the optimized expanded-data deep models.</figcaption>
+        </figure>
+        <figure>
+          <img src="../figures/expanded_openset/tsne_arcface.png" alt="t-SNE plot of ArcFace embeddings">
+          <figcaption>ArcFace embedding projection for representative unseen identities.</figcaption>
+        </figure>
+        <figure>
+          <img src="../figures/expanded_openset/tsne_softmax.png" alt="t-SNE plot of Softmax embeddings">
+          <figcaption>Softmax embedding projection for the same expanded open-set protocol.</figcaption>
+        </figure>
+      </div>
+    </section>
+  </main>
+
+  <footer class="wrap">
+    Optimized report generated from <code>reports/phase8_expanded_openset_results.json</code>. This dashboard intentionally presents the final optimized expanded open-set result set.
+  </footer>
+</body>
+</html>
