@@ -40,7 +40,7 @@ import json
 import os
 import random
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Union
 
 import numpy as np
 import tensorflow as tf
@@ -64,18 +64,38 @@ OPENSET_VAL_FRAC        = 0.20   # sample-level, on non-test identities
 
 # ── 1. Discover all .npy files and assign integer class labels ────────────────
 
-def _discover(processed_root: str):
+def _normalise_processed_roots(processed_root: Union[str, list, tuple]) -> List[str]:
+    """Return a stable list of processed roots from a string or sequence."""
+    if isinstance(processed_root, (list, tuple)):
+        roots = [str(r) for r in processed_root]
+    else:
+        roots = [str(processed_root)]
+    return [r for r in roots if r]
+
+
+def _discover(processed_root: Union[str, list, tuple]):
     """Walk processed_root and return (paths, int_labels, label_to_idx).
 
     A 'class' is the subdirectory directly under processed_root that
     contains .npy files (e.g. CASIA-Iris-Interval/001/L).
     """
-    root = Path(processed_root)
+    roots = [Path(r) for r in _normalise_processed_roots(processed_root)]
     # Map identity folder → sorted list of .npy paths
     identity_files: dict = {}
-    for path in sorted(root.rglob('*.npy')):
-        identity = path.parent.relative_to(root).as_posix()
-        identity_files.setdefault(identity, []).append(str(path))
+    seen_rel_files = set()
+    for root in roots:
+        if not root.exists():
+            print(f'[data_loader] WARN missing processed root: {root}')
+            continue
+        for path in sorted(root.rglob('*.npy')):
+            identity = path.parent.relative_to(root).as_posix()
+            rel_file = Path(identity) / path.name
+            rel_key = rel_file.as_posix()
+            if rel_key in seen_rel_files:
+                # Prefer earlier roots, normally data/processed over recovered.
+                continue
+            seen_rel_files.add(rel_key)
+            identity_files.setdefault(identity, []).append(str(path))
 
     # Stable, sorted label assignment
     sorted_identities = sorted(identity_files.keys())
@@ -134,6 +154,7 @@ def _identity_disjoint_split(
     rng: random.Random,
     test_ident_frac: float = OPENSET_TEST_IDENT_FRAC,
     val_sample_frac: float = OPENSET_VAL_FRAC,
+    test_idents: set = None,
 ):
     """Partition identities (not samples) for open-set evaluation.
 
@@ -152,12 +173,12 @@ def _identity_disjoint_split(
                                    — for grouping test samples by identity
                                    during pair generation (not used by model).
     """
-    eligible = [ident for ident, files in identity_files.items() if len(files) >= 2]
-    eligible_sorted = sorted(eligible)
-    rng.shuffle(eligible_sorted)
-
-    n_test_id = max(1, round(len(eligible_sorted) * test_ident_frac))
-    test_idents = set(eligible_sorted[:n_test_id])
+    if test_idents is None:
+        test_idents = select_identity_disjoint_test_identities(
+            identity_files, rng, test_ident_frac,
+        )
+    else:
+        test_idents = set(test_idents)
     train_pool_idents = sorted(set(identity_files.keys()) - test_idents)
 
     # Relabel train pool: 0..N-1
@@ -192,6 +213,19 @@ def _identity_disjoint_split(
         test.extend((f, lbl) for f in files)
 
     return train, val, test, train_label_to_idx, test_local_label_to_idx
+
+
+def select_identity_disjoint_test_identities(
+    identity_files: dict,
+    rng: random.Random,
+    test_ident_frac: float = OPENSET_TEST_IDENT_FRAC,
+) -> set:
+    """Choose identity-disjoint test identities from identities with >=2 files."""
+    eligible = [ident for ident, files in identity_files.items() if len(files) >= 2]
+    eligible_sorted = sorted(eligible)
+    rng.shuffle(eligible_sorted)
+    n_test_id = max(1, round(len(eligible_sorted) * test_ident_frac))
+    return set(eligible_sorted[:n_test_id])
 
 
 # ── 2. tf.data.Dataset factory ────────────────────────────────────────────────
@@ -277,11 +311,12 @@ NUM_CLASSES: int = 0
 
 
 def build_datasets(
-    processed_root: str = 'data/processed',
+    processed_root: Union[str, list, tuple] = 'data/processed',
     batch_size: int = 32,
     test_split_path: str = None,
     min_samples: int = 1,
     split_mode: str = 'stratified',
+    fixed_test_identities: list = None,
 ):
     """Discover data, split, and return three tf.data.Dataset objects.
 
@@ -289,7 +324,9 @@ def build_datasets(
     head consume CategoricalCrossentropy so no format difference is needed.
 
     Args:
-        processed_root:  path to data/processed/
+        processed_root:  path to data/processed/ or a list of roots. When a list
+                         is passed, roots are merged by identity relative path;
+                         earlier roots win duplicate files.
         batch_size:      batch size for all three splits
         test_split_path: where to write the test split JSON (defaults to
                          TEST_SPLIT_PATH for 'stratified' and
@@ -298,6 +335,11 @@ def build_datasets(
                          keep all; set to 2 for ArcFace to exclude singletons)
         split_mode:      'stratified' — closed-set, identities in all splits
                          'identity_disjoint' — open-set, disjoint test identities
+        fixed_test_identities:
+                         optional identity strings to hold out for
+                         identity_disjoint mode. This keeps Softmax and ArcFace
+                         on the same open-set test identities even when ArcFace
+                         filters singleton training classes.
 
     Returns:
         (train_ds, val_ds, test_ds, num_classes)
@@ -309,7 +351,13 @@ def build_datasets(
         test_split_path = (OPENSET_SPLIT_PATH if split_mode == 'identity_disjoint'
                            else TEST_SPLIT_PATH)
 
-    _, _, label_to_idx, identity_files = _discover(processed_root)
+    roots = _normalise_processed_roots(processed_root)
+    _, _, label_to_idx, identity_files_all = _discover(roots)
+
+    if not identity_files_all:
+        raise RuntimeError(f'No .npy files found under processed roots: {roots}')
+
+    identity_files = identity_files_all
 
     # Filter out identities with fewer than min_samples images
     if min_samples > 1:
@@ -322,9 +370,14 @@ def build_datasets(
     rng = random.Random(SEED)
 
     if split_mode == 'identity_disjoint':
+        if fixed_test_identities is None:
+            split_rng = random.Random(SEED)
+            fixed_test_identities = sorted(select_identity_disjoint_test_identities(
+                identity_files_all, split_rng,
+            ))
         (train_samples, val_samples, test_samples,
          train_label_to_idx, test_local_label_to_idx) = _identity_disjoint_split(
-            identity_files, rng,
+            identity_files, rng, test_idents=set(fixed_test_identities),
         )
         num_classes = len(train_label_to_idx)
         NUM_CLASSES = num_classes
@@ -333,6 +386,8 @@ def build_datasets(
         _save_test_split(
             test_samples, test_local_label_to_idx, test_split_path,
             num_classes_model=num_classes,
+            processed_roots=roots,
+            train_label_to_idx=train_label_to_idx,
         )
         print(f'[data_loader] Mode         : identity_disjoint (open-set)')
         print(f'[data_loader] Train idents : {num_classes}')
@@ -346,6 +401,7 @@ def build_datasets(
         _save_test_split(
             test_samples, label_to_idx, test_split_path,
             num_classes_model=num_classes,
+            processed_roots=roots,
         )
         print(f'[data_loader] Mode         : stratified (closed-set)')
         print(f'[data_loader] Classes      : {num_classes}')
@@ -366,7 +422,8 @@ def build_datasets(
     return train_ds, val_ds, test_ds, num_classes
 
 
-def _save_test_split(test_samples, label_to_idx, path, num_classes_model=None):
+def _save_test_split(test_samples, label_to_idx, path, num_classes_model=None,
+                     processed_roots=None, train_label_to_idx=None):
     """Serialise the test split to JSON for reproducible Phase 6 evaluation.
 
     Args:
@@ -386,9 +443,18 @@ def _save_test_split(test_samples, label_to_idx, path, num_classes_model=None):
     ]
     if num_classes_model is None:
         num_classes_model = len(label_to_idx)
+    payload = {
+        'num_classes': num_classes_model,
+        'samples': records,
+    }
+    if processed_roots is not None:
+        payload['processed_roots'] = processed_roots
+    if train_label_to_idx is not None:
+        payload['train_identities'] = sorted(train_label_to_idx.keys())
+        payload['test_identities'] = sorted(label_to_idx.keys())
     os.makedirs(os.path.dirname(path) if os.path.dirname(path) else '.', exist_ok=True)
     with open(path, 'w') as f:
-        json.dump({'num_classes': num_classes_model, 'samples': records}, f, indent=2)
+        json.dump(payload, f, indent=2)
     print(f'[data_loader] Test split saved -> {path}  ({len(records)} samples)')
 
 
