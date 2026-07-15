@@ -24,7 +24,6 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
-.claude/
 
 # Logs and outputs
 *.log
@@ -42,7 +41,3 @@ models/*.json
 figures/recovery_qc/
 reports/recovery_metadata*.jsonl
 reports/recovery_summary*.json
-
-# Local reference docs (personal notes, not for repo)
-PROJECT_STATUS.md
-HANDOVER.md
