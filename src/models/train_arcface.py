@@ -57,11 +57,19 @@ RAMPUP_EPOCHS  = 15        # linear ramp m: 0→0.5, s: 16→64
 MIN_SAMPLES    = 2         # exclude single-sample classes
 
 CHECKPOINT_PATH         = 'models/arcface_best.h5'
+LATEST_PATH             = 'models/arcface_latest.h5'
 BACKBONE_PATH           = 'models/arcface_backbone.weights.h5'
 HISTORY_PATH            = 'models/arcface_history.json'
 OPENSET_CHECKPOINT_PATH = 'models/arcface_openset_best.h5'
+OPENSET_LATEST_PATH     = 'models/arcface_openset_latest.h5'
 OPENSET_BACKBONE_PATH   = 'models/arcface_openset_backbone.weights.h5'
 OPENSET_HISTORY_PATH    = 'models/arcface_openset_history.json'
+EXPANDED_OPENSET_CHECKPOINT_PATH = 'models/arcface_expanded_openset_best.h5'
+EXPANDED_OPENSET_LATEST_PATH     = 'models/arcface_expanded_openset_latest.h5'
+EXPANDED_OPENSET_BACKBONE_PATH   = 'models/arcface_expanded_openset_backbone.weights.h5'
+EXPANDED_OPENSET_HISTORY_PATH    = 'models/arcface_expanded_openset_history.json'
+EXPANDED_OPENSET_SPLIT_PATH      = 'data/test_split_expanded_openset.json'
+EXPANDED_ROOTS = ['data/processed', 'data/processed_recovered']
 
 
 # ── Margin / Scale Annealing ─────────────────────────────────────────────────
@@ -102,6 +110,8 @@ class MarginScaleAnnealingCallback(tf.keras.callbacks.Callback):
 
 
 def build_arcface_model(num_classes: int, num_train_samples: int,
+                        batch_size: int = BATCH_SIZE,
+                        start_epoch: int = 0,
                         embedding_dim: int = EMBEDDING_DIM):
     """Build and compile the full ArcFace training model.
 
@@ -146,20 +156,23 @@ def build_arcface_model(num_classes: int, num_train_samples: int,
     )
 
     # Step LR decay at epochs 25/35/45 (scaled for 50-epoch schedule)
-    steps_per_epoch = num_train_samples // BATCH_SIZE + 1
-    lr_schedule = tf.keras.optimizers.schedules.PiecewiseConstantDecay(
-        boundaries=[
-            steps_per_epoch * 25,
-            steps_per_epoch * 35,
-            steps_per_epoch * 45,
-        ],
-        values=[
-            LR_INITIAL,
-            LR_INITIAL * 0.1,
-            LR_INITIAL * 0.01,
-            LR_INITIAL * 0.001,
-        ],
-    )
+    steps_per_epoch = num_train_samples // batch_size + 1
+    lr_boundaries = [25, 35, 45]
+    lr_values = [LR_INITIAL, LR_INITIAL * 0.1,
+                 LR_INITIAL * 0.01, LR_INITIAL * 0.001]
+    current_stage = sum(start_epoch >= b for b in lr_boundaries)
+    future_boundaries = [
+        steps_per_epoch * (b - start_epoch)
+        for b in lr_boundaries
+        if b > start_epoch
+    ]
+    if future_boundaries:
+        lr_schedule = tf.keras.optimizers.schedules.PiecewiseConstantDecay(
+            boundaries=future_boundaries,
+            values=lr_values[current_stage:],
+        )
+    else:
+        lr_schedule = lr_values[current_stage]
 
     training_model.compile(
         optimizer=tf.keras.optimizers.SGD(
@@ -188,9 +201,59 @@ def _adapt_dataset_for_arcface(ds: tf.data.Dataset):
     )
 
 
-def get_callbacks(checkpoint_path: str = CHECKPOINT_PATH):
+class EmbeddingDiversityCallback(tf.keras.callbacks.Callback):
+    """Monitor embedding spread to catch ArcFace collapse early."""
+
+    def __init__(self, backbone, val_ds, batches=4):
+        super().__init__()
+        self.backbone = backbone
+        self.val_ds = val_ds
+        self.batches = batches
+
+    def on_epoch_end(self, epoch, logs=None):
+        if logs is None:
+            logs = {}
+        embeddings = []
+        for i, (x, _) in enumerate(self.val_ds):
+            if i >= self.batches:
+                break
+            embeddings.append(self.backbone(x, training=False).numpy())
+        if not embeddings:
+            return
+        emb = tf.concat([tf.convert_to_tensor(e) for e in embeddings], axis=0).numpy()
+        mean_std = float(emb.std(axis=0).mean())
+        logs['val_embedding_std'] = mean_std
+        print(f'  [embedding] epoch {epoch}: val_embedding_std={mean_std:.6f}')
+
+
+def _load_history(history_path: str):
+    if not os.path.isfile(history_path):
+        return {}
+    with open(history_path, 'r') as f:
+        return json.load(f)
+
+
+def _best_history_value(history_data: dict, metric: str, mode: str):
+    values = history_data.get(metric, [])
+    if not values:
+        return None
+    return min(values) if mode == 'min' else max(values)
+
+
+def _merge_history(previous: dict, current: dict, initial_epoch: int):
+    merged = {}
+    for key in set(previous) | set(current):
+        prior_values = list(previous.get(key, []))
+        current_values = list(current.get(key, []))
+        merged[key] = prior_values[:initial_epoch] + current_values
+    return merged
+
+
+def get_callbacks(checkpoint_path: str = CHECKPOINT_PATH,
+                  backbone=None, val_ds=None,
+                  initial_value_threshold=None):
     os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
-    return [
+    callbacks = [
         MarginScaleAnnealingCallback(
             warmup_epochs=WARMUP_EPOCHS,
             rampup_epochs=RAMPUP_EPOCHS,
@@ -204,6 +267,7 @@ def get_callbacks(checkpoint_path: str = CHECKPOINT_PATH):
             mode='max',
             save_best_only=True,
             save_weights_only=False,
+            initial_value_threshold=initial_value_threshold,
             verbose=1,
         ),
         # No EarlyStopping — the margin/scale ramp-up causes val_accuracy
@@ -211,26 +275,48 @@ def get_callbacks(checkpoint_path: str = CHECKPOINT_PATH):
         # Instead, rely on the full 100-epoch schedule with LR step decay
         # at epochs 40/60/80 (standard ArcFace protocol).
     ]
+    if backbone is not None and val_ds is not None:
+        callbacks.append(EmbeddingDiversityCallback(backbone, val_ds))
+    return callbacks
 
 
 def train(epochs: int = EPOCHS, batch_size: int = BATCH_SIZE, cpu: bool = False,
-          openset: bool = False):
+          openset: bool = False, expanded: bool = False,
+          processed_roots: list = None, resume: bool = False,
+          initial_epoch: int = 0, show_summary: bool = False):
     if cpu:
         tf.config.set_visible_devices([], 'GPU')
         print('[train_arcface] GPU disabled — running on CPU')
 
-    checkpoint_path = OPENSET_CHECKPOINT_PATH if openset else CHECKPOINT_PATH
-    backbone_path   = OPENSET_BACKBONE_PATH   if openset else BACKBONE_PATH
-    history_path    = OPENSET_HISTORY_PATH    if openset else HISTORY_PATH
-    split_mode      = 'identity_disjoint'     if openset else 'stratified'
+    if expanded and not openset:
+        raise ValueError('Expanded training is currently defined for --openset only')
+    if expanded:
+        checkpoint_path = EXPANDED_OPENSET_CHECKPOINT_PATH
+        latest_path = EXPANDED_OPENSET_LATEST_PATH
+        backbone_path = EXPANDED_OPENSET_BACKBONE_PATH
+        history_path = EXPANDED_OPENSET_HISTORY_PATH
+        split_path = EXPANDED_OPENSET_SPLIT_PATH
+        default_roots = EXPANDED_ROOTS
+    else:
+        checkpoint_path = OPENSET_CHECKPOINT_PATH if openset else CHECKPOINT_PATH
+        latest_path = OPENSET_LATEST_PATH if openset else LATEST_PATH
+        backbone_path = OPENSET_BACKBONE_PATH if openset else BACKBONE_PATH
+        history_path = OPENSET_HISTORY_PATH if openset else HISTORY_PATH
+        split_path = None
+        default_roots = ['data/processed']
+    processed_root = processed_roots if processed_roots else default_roots
+    split_mode = 'identity_disjoint' if openset else 'stratified'
 
     print('=' * 60)
-    print(f'IrisNet — ArcFace Training  ({"open-set" if openset else "closed-set"})')
+    mode = 'expanded open-set' if expanded else ('open-set' if openset else 'closed-set')
+    print(f'IrisNet — ArcFace Training  ({mode})')
     print('=' * 60)
+    print(f'Processed roots: {processed_root}')
 
     train_ds, val_ds, _, num_classes = build_datasets(
-        batch_size=batch_size, min_samples=MIN_SAMPLES,
-        split_mode=split_mode,
+        processed_root=processed_root, batch_size=batch_size,
+        min_samples=MIN_SAMPLES, split_mode=split_mode,
+        test_split_path=split_path,
     )
     # Count training samples for LR schedule boundaries
     num_train_samples = sum(1 for _ in train_ds.unbatch())
@@ -246,24 +332,46 @@ def train(epochs: int = EPOCHS, batch_size: int = BATCH_SIZE, cpu: bool = False,
 
     training_model, backbone = build_arcface_model(
         num_classes, num_train_samples=num_train_samples,
+        batch_size=batch_size, start_epoch=initial_epoch,
     )
-    training_model.summary()
+    if resume:
+        resume_path = latest_path if os.path.isfile(latest_path) else checkpoint_path
+        if os.path.isfile(resume_path):
+            training_model.load_weights(resume_path)
+            print(f'[train_arcface] Resumed weights from {resume_path}')
+    if show_summary:
+        training_model.summary()
+
+    previous_history = _load_history(history_path) if resume else {}
+    checkpoint_threshold = _best_history_value(previous_history, 'val_accuracy', 'max')
+    if checkpoint_threshold is not None:
+        print(f'[train_arcface] Checkpoint resumes from best val_accuracy={checkpoint_threshold:.6f}')
 
     history = training_model.fit(
         train_ds_af,
         validation_data=val_ds_af,
         epochs=epochs,
-        callbacks=get_callbacks(checkpoint_path),
-        verbose=1,
+        initial_epoch=initial_epoch,
+        callbacks=get_callbacks(
+            checkpoint_path,
+            backbone=backbone,
+            val_ds=val_ds,
+            initial_value_threshold=checkpoint_threshold,
+        ),
+        verbose=2,
     )
+
+    training_model.save(latest_path)
+    print(f'Latest full model saved -> {latest_path}')
 
     # Save backbone separately for Phase 6 inference
     backbone.save_weights(backbone_path)
     print(f'Backbone weights saved -> {backbone_path}')
 
     os.makedirs(os.path.dirname(history_path), exist_ok=True)
+    merged_history = _merge_history(previous_history, history.history, initial_epoch)
     with open(history_path, 'w') as f:
-        json.dump(history.history, f, indent=2)
+        json.dump(merged_history, f, indent=2)
     print(f'History saved -> {history_path}')
     print(f'Best full model saved -> {checkpoint_path}')
     return history
@@ -276,6 +384,18 @@ if __name__ == '__main__':
     parser.add_argument('--cpu',        action='store_true', default=False)
     parser.add_argument('--openset',    action='store_true', default=False,
                         help='Train with identity-disjoint open-set split')
+    parser.add_argument('--expanded',   action='store_true', default=False,
+                        help='Use data/processed + data/processed_recovered for open-set training')
+    parser.add_argument('--processed-root', action='append', dest='processed_roots',
+                        help='Processed root to use; repeat to merge roots')
+    parser.add_argument('--resume', action='store_true', default=False,
+                        help='Load the selected checkpoint before training')
+    parser.add_argument('--initial-epoch', type=int, default=0,
+                        help='Initial epoch passed to model.fit for chunked runs')
+    parser.add_argument('--summary', action='store_true', default=False,
+                        help='Print model.summary() before training')
     args = parser.parse_args()
     train(epochs=args.epochs, batch_size=args.batch_size, cpu=args.cpu,
-          openset=args.openset)
+          openset=args.openset, expanded=args.expanded,
+          processed_roots=args.processed_roots, resume=args.resume,
+          initial_epoch=args.initial_epoch, show_summary=args.summary)
