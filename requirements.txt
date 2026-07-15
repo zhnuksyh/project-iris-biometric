@@ -1,5 +1,4 @@
-tensorflow-cpu==2.10
-tensorflow-directml-plugin
+tensorflow[and-cuda]==2.21.0
 opencv-python
 numpy
 pandas
